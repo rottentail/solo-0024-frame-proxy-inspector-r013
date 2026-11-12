@@ -11,6 +11,57 @@ from frame_proxy.app import build_router
 from frame_proxy.config import Settings
 from frame_proxy.http.server import FrameProxyServer, build_server
 from frame_proxy.media.avi_writer import build_sample_avi
+from frame_proxy.service.cancellation import WorkflowGate
+
+
+class PauseGate(WorkflowGate):
+    """Deterministic gate that blocks a named job at a chosen progress point."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._paused: dict[tuple[str, str], int] = {}
+        self._reached: dict[tuple[str, str], int] = {}
+        self._released: set[tuple[str, str]] = set()
+
+    def pause_at(self, job_kind: str, job_id: str, progress: int) -> None:
+        with self._condition:
+            self._paused[(job_kind, job_id)] = progress
+            self._released.discard((job_kind, job_id))
+
+    def release(self, job_kind: str, job_id: str) -> None:
+        with self._condition:
+            self._released.add((job_kind, job_id))
+            self._paused.pop((job_kind, job_id), None)
+            self._condition.notify_all()
+
+    def wait_until_reached(
+        self,
+        job_kind: str,
+        job_id: str,
+        timeout: float = 5.0,
+    ) -> None:
+        key = (job_kind, job_id)
+        with self._condition:
+            if not self._condition.wait_for(
+                lambda: key in self._reached,
+                timeout=timeout,
+            ):
+                raise RuntimeError(f"gate for {key} never reached")
+
+    def reached_progress(self, job_kind: str, job_id: str) -> int | None:
+        with self._condition:
+            return self._reached.get((job_kind, job_id))
+
+    def await_gate(self, job_kind: str, job_id: str, *, progress: int) -> None:
+        key = (job_kind, job_id)
+        with self._condition:
+            self._reached[key] = progress
+            self._condition.notify_all()
+            if not self._condition.wait_for(
+                lambda: key not in self._paused or key in self._released,
+                timeout=10.0,
+            ):
+                raise RuntimeError(f"gate for {key} timed out")
 
 
 class HttpResult:
@@ -30,16 +81,27 @@ class HttpResult:
 
 
 class RunningService:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        data_root: Path | None = None,
+        gate: WorkflowGate | None = None,
+    ) -> None:
         self._temporary: tempfile.TemporaryDirectory[str] | None = None
+        self._external_root = data_root
+        self._gate = gate
         self._server: FrameProxyServer | None = None
         self._thread: threading.Thread | None = None
         self._port = 0
 
     def __enter__(self) -> "RunningService":
-        self._temporary = tempfile.TemporaryDirectory(prefix="frame-proxy-check-")
-        settings = Settings(data_root=Path(self._temporary.name))
-        router = build_router(settings)
+        if self._external_root is None:
+            self._temporary = tempfile.TemporaryDirectory(prefix="frame-proxy-check-")
+            root = Path(self._temporary.name)
+        else:
+            root = self._external_root
+        settings = Settings(data_root=root)
+        router = build_router(settings, gate=self._gate)
         self._server = build_server(
             "127.0.0.1",
             0,

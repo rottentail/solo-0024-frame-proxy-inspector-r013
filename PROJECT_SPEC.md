@@ -70,8 +70,10 @@ State machine:
 
 `pending -> scanning -> indexed`
 
-`pending -> failed`, `scanning -> failed`. The `indexed` and `failed` states are
-terminal.
+`pending -> failed`, `scanning -> failed`, `pending -> cancelled`,
+`scanning -> cancelled`. The `indexed`, `failed`, and `cancelled` states are
+terminal. A cancelled inspection holds the stable `operation_cancelled` code
+and never exposes partial scene data.
 
 ### Contact sheet
 
@@ -85,13 +87,35 @@ Invariants:
 - Each scene appears at most once.
 - The request is rejected before composition when its pixel budget is exceeded.
 - A failed composition removes temporary output and commits no ready record.
+- A cancelled composition publishes no artifact URL and carries no digest.
 
 State machine:
 
 `planned -> compositing -> ready`
 
-`planned -> failed`, `compositing -> failed`. The `ready` and `failed` states
-are terminal.
+`planned -> failed`, `compositing -> failed`, `planned -> cancelled`,
+`compositing -> cancelled`. The `ready`, `failed`, and `cancelled` states are
+terminal.
+
+### Cancellation
+
+Cancellation applies to the two long-running workflows (shot inspection and
+contact sheet composition). A cancellation request is durable: it writes a
+marker file under the shared data root and settles the job record under the
+job's advisory file lock before it is acknowledged.
+
+Invariants:
+
+- A confirmed cancellation stops further frame decoding or tile compositing
+  at the next cooperative checkpoint and releases the worker's buffers.
+- A cancelled job never reaches its success state, never exposes partial
+  results through the normal query endpoints, and never publishes an artifact.
+- Terminal settlement is first-writer-wins across processes: whichever of
+  completion, failure, or cancellation commits first under the file lock is
+  the single durable outcome. A late cancellation cannot rewrite a finished
+  job and a late completion cannot overwrite a cancellation.
+- Every later read, including from another service process on the same data
+  root, observes the same terminal state.
 
 ## Modules
 
@@ -99,9 +123,10 @@ are terminal.
 - `domain`: entity records, limits, errors, and legal state transitions.
 - `media`: RIFF/AVI parsing, frame decoding, frame fingerprints, cut detection,
   PPM encoding, and grid composition.
-- `service`: workflow orchestration and observable failure behavior.
-- `storage`: namespaced files, exclusive creation, state updates, and atomic
-  publication.
+- `service`: workflow orchestration, cooperative cancellation, and observable
+  failure behavior.
+- `storage`: namespaced files, exclusive creation, state updates, durable
+  cancellation markers, locked terminal settlement, and atomic publication.
 - `tools`: executable production smoke paths for each workflow.
 
 The HTTP layer depends on service interfaces. Services depend on domain and
@@ -174,22 +199,52 @@ removed and no artifact URL becomes available.
 - `GET /v1/clips/{clip_id}`
 - `POST /v1/clips/{clip_id}/inspections`
 - `GET /v1/inspections/{inspection_id}`
+- `POST /v1/inspections/{inspection_id}/cancellation`
 - `POST /v1/inspections/{inspection_id}/contact-sheets`
 - `GET /v1/contact-sheets/{sheet_id}`
+- `POST /v1/contact-sheets/{sheet_id}/cancellation`
 - `GET /v1/contact-sheets/{sheet_id}/artifact`
 
 Errors are JSON objects with `error.code`, `error.message`, and an optional
 `error.details` object. Validation errors use HTTP 400, missing records use
 HTTP 404, conflicting identifiers use HTTP 409, and bounded decoder failures
-use HTTP 422.
+use HTTP 422. A confirmed cancellation returns HTTP 200 with
+`cancellation.outcome = "cancelled"`; a cancellation that arrives after
+another terminal state returns HTTP 409 with
+`error.details.outcome = "superseded"` and the winning state. A create request
+whose job is cancelled while running returns HTTP 409 with code
+`operation_cancelled`.
+
+### 4. Cancel a running job
+
+Entry points: `POST /v1/inspections/{inspection_id}/cancellation` and
+`POST /v1/contact-sheets/{sheet_id}/cancellation`.
+
+Steps:
+
+1. The service loads the job and writes a durable cancellation marker under
+   the data root, then signals any in-process worker through its
+   cancellation event.
+2. The running worker observes the decision (in-memory event or marker file)
+   at its next per-frame or per-tile checkpoint and stops decoding or
+   compositing.
+3. The cancel request settles the record to `cancelled` under the job's
+   advisory file lock. If a terminal state was committed first, the stored
+   record is returned untouched and the request reports `superseded`.
+4. Reads through the normal query and artifact endpoints observe the terminal
+   outcome; cancelled jobs never publish successful results or artifacts.
 
 ## Validation plan
 
 Each workflow has a bounded production smoke path under `tools/`. The checks
 start the real HTTP application on a loopback port, create media through the
 production AVI writer, and exercise success plus a representative failure.
-They also verify persisted state and output digests. The build command only
-compiles the Python source and does not require network access.
+They also verify persisted state and output digests. The cancellation check
+additionally drives a deterministic pause gate, runs a second service against
+the same data root to prove cross-process cancellation, and races
+cancellation against completion to confirm a single terminal outcome. The
+build command only compiles the Python source and does not require network
+access.
 
 Automated tests are deferred to the later task boundary. This baseline keeps
 the smoke paths deterministic and local so future tests can replace or extend

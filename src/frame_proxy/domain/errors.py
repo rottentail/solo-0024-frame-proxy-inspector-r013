@@ -16,6 +16,7 @@ class ErrorCode(str, Enum):
     FRAME_DECODE = "frame_decode_failed"
     CONTACT_SHEET_BUDGET = "contact_sheet_budget_exceeded"
     INVALID_STATE = "invalid_state_transition"
+    OPERATION_CANCELLED = "operation_cancelled"
     STORAGE = "storage_failure"
     INTERNAL = "internal_failure"
 
@@ -94,6 +95,21 @@ class StateError(ApplicationError):
     def __init__(self, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(
             ErrorCode.INVALID_STATE,
+            message,
+            status=409,
+            details=details,
+        )
+
+
+class CancellationError(ApplicationError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            ErrorCode.OPERATION_CANCELLED,
             message,
             status=409,
             details=details,

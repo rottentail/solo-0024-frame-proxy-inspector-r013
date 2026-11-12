@@ -2,6 +2,7 @@
 
 from frame_proxy.domain.errors import (
     ApplicationError,
+    CancellationError,
     ConflictError,
     MediaValidationError,
     NotFoundError,
@@ -24,6 +25,7 @@ from frame_proxy.domain.policies import (
 
 __all__ = [
     "ApplicationError",
+    "CancellationError",
     "ClipRecord",
     "ConflictError",
     "ContactSheetRecord",

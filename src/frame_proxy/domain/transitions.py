@@ -11,17 +11,19 @@ CLIP_TRANSITIONS: dict[str, set[str]] = {
 }
 
 INSPECTION_TRANSITIONS: dict[str, set[str]] = {
-    "pending": {"scanning", "failed"},
-    "scanning": {"indexed", "failed"},
+    "pending": {"scanning", "failed", "cancelled"},
+    "scanning": {"indexed", "failed", "cancelled"},
     "indexed": set(),
     "failed": set(),
+    "cancelled": set(),
 }
 
 CONTACT_SHEET_TRANSITIONS: dict[str, set[str]] = {
-    "planned": {"compositing", "failed"},
-    "compositing": {"ready", "failed"},
+    "planned": {"compositing", "failed", "cancelled"},
+    "compositing": {"ready", "failed", "cancelled"},
     "ready": set(),
     "failed": set(),
+    "cancelled": set(),
 }
 
 

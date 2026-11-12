@@ -52,8 +52,10 @@ The generated file is an uncompressed 24-bit AVI with four color scenes and
 | `GET` | `/v1/clips/{clip_id}` | read clip geometry and digest |
 | `POST` | `/v1/clips/{clip_id}/inspections` | index shot boundaries |
 | `GET` | `/v1/inspections/{inspection_id}` | read an immutable inspection |
+| `POST` | `/v1/inspections/{inspection_id}/cancellation` | cancel a running inspection |
 | `POST` | `/v1/inspections/{inspection_id}/contact-sheets` | compose a PPM grid |
 | `GET` | `/v1/contact-sheets/{sheet_id}` | read the tile map and digest |
+| `POST` | `/v1/contact-sheets/{sheet_id}/cancellation` | cancel a running composition |
 | `GET` | `/v1/contact-sheets/{sheet_id}/artifact` | fetch the PPM bytes |
 
 Identifiers use lowercase letters, digits, `_`, and `-`, begin with a letter,
@@ -86,6 +88,32 @@ Example contact sheet request:
 `selection` may be `stored`, `midpoint`, or `first`. The rendered PPM is
 binary P6 with a maximum value of 255.
 
+## Cancelling a running job
+
+Shot inspections and contact sheet compositions are long-running and can be
+cancelled while they are still decoding frames or compositing tiles:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/inspections/inspection-demo-a/cancellation
+curl -X POST http://127.0.0.1:8765/v1/contact-sheets/sheet-demo-a/cancellation
+```
+
+Cancellation is cooperative but confirmed: the endpoint writes a durable
+cancellation marker under the data root and settles the job record to the
+terminal `cancelled` state before returning HTTP 200
+(`{"cancellation": {"outcome": "cancelled"}}`). Workers stop at their next
+frame/tile checkpoint and release their working memory; a cancelled job never
+becomes `indexed` or `ready`, exposes scene data, or publishes an artifact.
+The original create request receives HTTP 409 with code
+`operation_cancelled`.
+
+If the job already reached a terminal state first, the endpoint returns HTTP
+409 with `error.details.outcome = "superseded"` and the winning state (for
+example `indexed` or `ready`). The first terminal state always wins, including
+for another service process sharing the same data root: a late cancellation
+cannot rewrite a completed record, and a late completion cannot overwrite a
+cancellation. Repeated cancellation requests are idempotent.
+
 ## Data layout
 
 `FRAME_PROXY_DATA_DIR` selects the data root. Its default is
@@ -100,12 +128,15 @@ binary P6 with a maximum value of 255.
 ├── contact-sheets/<sheet_id>/
 │   ├── record.json
 │   └── sheet.ppm
+├── cancellations/<kind>-<id>.json
 └── locks/
 ```
 
 Records are written through temporary files and renamed into place. Contact
 sheet bytes and their ready record are verified before the record becomes
-visible.
+visible. Cancellation markers are durable files so every process sharing the
+data root observes the same cancellation decision; terminal settlement is
+serialized per job with an advisory file lock.
 
 ## Source layout
 
@@ -121,7 +152,8 @@ tools/
 ├── harness.py
 ├── check_clip_intake.py
 ├── check_shot_index.py
-└── check_contact_sheet.py
+├── check_contact_sheet.py
+└── check_cancellation.py
 ```
 
 ## Build and workflow checks
@@ -138,6 +170,7 @@ Run one workflow check at a time:
 PYTHONPATH=src:. python3 tools/check_clip_intake.py
 PYTHONPATH=src:. python3 tools/check_shot_index.py
 PYTHONPATH=src:. python3 tools/check_contact_sheet.py
+PYTHONPATH=src:. python3 tools/check_cancellation.py
 ```
 
 Each check starts a real loopback HTTP server, generates media through the

@@ -4,7 +4,12 @@ import json
 from typing import Any
 
 from frame_proxy.config import Settings
-from frame_proxy.domain.errors import ApplicationError, ErrorCode, ValidationError
+from frame_proxy.domain.errors import (
+    ApplicationError,
+    ConflictError,
+    ErrorCode,
+    ValidationError,
+)
 from frame_proxy.domain.policies import (
     validate_clip_id,
     validate_contact_sheet_request,
@@ -94,6 +99,17 @@ class RequestRouter:
                 request = validate_contact_sheet_request(self._decode_json(body))
                 record = self._contact_sheets.create(inspection_id, request)
                 return ResponseData.json(201, {"contact_sheet": record.as_dict()})
+            if (
+                len(parts) == 4
+                and parts[3] == "cancellation"
+                and method == "POST"
+            ):
+                record = self._inspections.cancel(inspection_id)
+                return self._cancellation_response(
+                    "inspection",
+                    record.state,
+                    record.as_dict(),
+                )
 
         if parts[1] == "contact-sheets" and len(parts) >= 3:
             sheet_id = parts[2]
@@ -107,8 +123,36 @@ class RequestRouter:
                     payload,
                     "image/x-portable-pixmap",
                 )
+            if (
+                len(parts) == 4
+                and parts[3] == "cancellation"
+                and method == "POST"
+            ):
+                record = self._contact_sheets.cancel(sheet_id)
+                return self._cancellation_response(
+                    "contact_sheet",
+                    record.state,
+                    record.as_dict(),
+                )
 
         return self._not_found(path)
+
+    def _cancellation_response(
+        self,
+        envelope: str,
+        state: str,
+        record: dict[str, Any],
+    ) -> ResponseData:
+        if state == "cancelled":
+            return ResponseData.json(
+                200,
+                {envelope: record, "cancellation": {"outcome": "cancelled"}},
+            )
+        error = ConflictError(
+            "job already reached a terminal state and cannot be cancelled",
+            details={"outcome": "superseded", "state": state},
+        )
+        return ResponseData.json(error.status, error.as_dict())
 
     def _decode_json(self, body: bytes) -> Any:
         if len(body) > self._settings.max_json_bytes:

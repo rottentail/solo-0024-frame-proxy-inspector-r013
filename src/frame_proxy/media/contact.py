@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from frame_proxy.domain.errors import ErrorCode, ValidationError
@@ -9,6 +10,9 @@ from frame_proxy.domain.models import SceneRecord
 from frame_proxy.domain.policies import ContactSheetRequest
 from frame_proxy.media.frames import Frame
 from frame_proxy.media.ppm import encode_ppm
+
+# Optional cooperative cancellation hook invoked once per tile.
+Checkpoint = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +136,7 @@ def compose_grid(
     frames: dict[int, Frame],
     background_rgb: tuple[int, int, int],
     selection: str,
+    checkpoint: Checkpoint | None = None,
 ) -> GridResult:
     if len(scenes) > plan.columns * plan.rows:
         raise ValueError("scene count exceeds grid capacity")
@@ -139,6 +144,8 @@ def compose_grid(
     tile_map: list[dict[str, int]] = []
 
     for tile_index, scene in enumerate(scenes):
+        if checkpoint is not None:
+            checkpoint()
         row = tile_index // plan.columns
         column = tile_index % plan.columns
         source_frame = _selected_frame(scene, selection)

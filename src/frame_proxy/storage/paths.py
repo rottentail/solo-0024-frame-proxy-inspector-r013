@@ -21,6 +21,10 @@ class DataPaths:
         return self.root / "contact-sheets"
 
     @property
+    def cancellations(self) -> Path:
+        return self.root / "cancellations"
+
+    @property
     def locks(self) -> Path:
         return self.root / "locks"
 
@@ -48,12 +52,16 @@ class DataPaths:
     def lock_path(self, kind: str, identifier: str) -> Path:
         return self.locks / f"{kind}-{identifier}.lock"
 
+    def cancellation_marker(self, kind: str, identifier: str) -> Path:
+        return self.cancellations / f"{kind}-{identifier}.json"
+
     def ensure_ready(self) -> None:
         for path in (
             self.root,
             self.clips,
             self.inspections,
             self.contact_sheets,
+            self.cancellations,
             self.locks,
         ):
             path.mkdir(parents=True, exist_ok=True)
